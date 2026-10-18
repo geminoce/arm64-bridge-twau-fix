@@ -1,0 +1,65 @@
+--- a/src/dynarmic/backend/arm64/emit_arm64_memory.cpp
++++ b/src/dynarmic/backend/arm64/emit_arm64_memory.cpp
+@@ -533,7 +533,6 @@
+         }
+     }();
+     const bool ordered = IsOrdered(args[2].GetImmediateAccType());
+-    ctx.fpsr.Spill();
+     ctx.reg_alloc.SpillFlags();
+     RegAlloc::Realize(Xaddr, Rvalue);
+ 
+@@ -542,7 +541,8 @@
+     const auto [Xbase, Xoffset] = FastmemEmitVAddrLookup<bitsize>(code, ctx, Xaddr, fallback);
+     const auto fastmem_location = EmitMemoryLdr<bitsize>(code, Rvalue->index(), Xbase, Xoffset, ordered, ShouldExt32(ctx));
+ 
+-    ctx.deferred_emits.emplace_back([&code, &ctx, inst, marker, Xaddr = *Xaddr, Rvalue = *Rvalue, ordered, fallback, end, fastmem_location] {
++    // Direct memory preserves FPSR; only the callback branch needs its own spill state.
++    ctx.deferred_emits.emplace_back([&code, &ctx, inst, marker, Xaddr = *Xaddr, Rvalue = *Rvalue, ordered, fallback, end, fastmem_location, fpsr = ctx.fpsr]() mutable {
+         ctx.ebi.fastmem_patch_info.emplace(
+             fastmem_location - ctx.ebi.entry_point,
+             FastmemPatchInfo{
+@@ -554,8 +554,10 @@
+             });
+ 
+         code.l(*fallback);
++        fpsr.Spill();
+         code.MOV(Xscratch0, Xaddr);
+         EmitRelocation(code, ctx, WrappedReadMemoryLinkTarget(bitsize));
++        fpsr.Load();
+         if (ordered) {
+             code.DMB(oaknut::BarrierOp::ISH);
+         }
+@@ -583,7 +585,6 @@
+         }
+     }();
+     const bool ordered = IsOrdered(args[3].GetImmediateAccType());
+-    ctx.fpsr.Spill();
+     ctx.reg_alloc.SpillFlags();
+     RegAlloc::Realize(Xaddr, Rvalue);
+ 
+@@ -592,7 +593,8 @@
+     const auto [Xbase, Xoffset] = FastmemEmitVAddrLookup<bitsize>(code, ctx, Xaddr, fallback);
+     const auto fastmem_location = EmitMemoryStr<bitsize>(code, Rvalue->index(), Xbase, Xoffset, ordered, ShouldExt32(ctx));
+ 
+-    ctx.deferred_emits.emplace_back([&code, &ctx, inst, marker, Xaddr = *Xaddr, Rvalue = *Rvalue, ordered, fallback, end, fastmem_location] {
++    // Capture here: deferred emission runs after the rest of the block changes ctx.fpsr.
++    ctx.deferred_emits.emplace_back([&code, &ctx, inst, marker, Xaddr = *Xaddr, Rvalue = *Rvalue, ordered, fallback, end, fastmem_location, fpsr = ctx.fpsr]() mutable {
+         ctx.ebi.fastmem_patch_info.emplace(
+             fastmem_location - ctx.ebi.entry_point,
+             FastmemPatchInfo{
+@@ -604,6 +606,7 @@
+             });
+ 
+         code.l(*fallback);
++        fpsr.Spill();
+         if constexpr (bitsize == 128) {
+             code.MOV(Xscratch0, Xaddr);
+             code.MOV(Q0.B16(), Rvalue.B16());
+@@ -615,6 +618,7 @@
+             code.DMB(oaknut::BarrierOp::ISH);
+         }
+         EmitRelocation(code, ctx, WrappedWriteMemoryLinkTarget(bitsize));
++        fpsr.Load();
+         if (ordered) {
+             code.DMB(oaknut::BarrierOp::ISH);
+         }
