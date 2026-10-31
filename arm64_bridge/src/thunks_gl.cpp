@@ -5,6 +5,7 @@
 #include "game_port_config.h"
 #include "thunks_android.h"
 #include "elf_loader.h"
+#include "wolf_shader_compat.h"
 #include <array>
 #include <chrono>
 #include <string_view>
@@ -233,10 +234,6 @@ void ThunkManager::RegisterGLThunks() {
         glAttachShader(jit.Regs()[0], jit.Regs()[1]);
     });
 
-    RegisterThunk("glBindAttribLocation", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        const char* name = reinterpret_cast<const char*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[2]));
-        if (name) glBindAttribLocation(jit.Regs()[0], jit.Regs()[1], name);
-    });
 
     RegisterThunk("glBindBuffer", [](Dynarmic::A32::Jit& jit, DynarmicHost&) {
         glBindBuffer(jit.Regs()[0], jit.Regs()[1]);
@@ -272,21 +269,34 @@ void ThunkManager::RegisterGLThunks() {
         glBufferData(target, size, data, jit.Regs()[3]);
         const GLuint buffer = BridgeBoundBuffer(target);
         if (size < 0 || !buffer) return;
-        if (BridgeHasGlES3()) {
-            std::lock_guard<std::mutex> lock(s_mapped_buffers_mutex);
-            // A replacement store invalidates any ES2 preimage in the group.
-            s_buffer_shadows.erase(BufferKeyLocked(host, buffer));
-            return;
-        }
-        GLint actual_size = 0;
-        glGetBufferParameteriv(target, GL_BUFFER_SIZE, &actual_size);
-        if (actual_size != size) return;
         std::lock_guard<std::mutex> lock(s_mapped_buffers_mutex);
-        auto& shadow = s_buffer_shadows[BufferKeyLocked(host, buffer)];
-        shadow.resize(static_cast<size_t>(size));
-        if (data && size) memcpy(shadow.data(), data, static_cast<size_t>(size));
-        // Null BufferData leaves an undefined store. Zero is one valid preimage.
-        else std::fill(shadow.begin(), shadow.end(), 0);
+        const BufferKey key = BufferKeyLocked(host, buffer);
+        auto mapping = s_mapped_buffers.find(key);
+        if (mapping != s_mapped_buffers.end()) {
+            GLint mapped = GL_TRUE;
+            glGetBufferParameteriv(target, GL_BUFFER_MAPPED_OES, &mapped);
+            if (mapped) return; // Rejected BufferData leaves the existing mapping alive.
+        }
+        if (BridgeHasGlES3()) {
+            // A replacement store invalidates any ES2 preimage in the group.
+            s_buffer_shadows.erase(key);
+        } else {
+            GLint actual_size = 0, actual_usage = 0;
+            glGetBufferParameteriv(target, GL_BUFFER_SIZE, &actual_size);
+            glGetBufferParameteriv(target, GL_BUFFER_USAGE, &actual_usage);
+            if (actual_size == size && static_cast<GLenum>(actual_usage) == jit.Regs()[3]) {
+                auto& shadow = s_buffer_shadows[key];
+                shadow.resize(static_cast<size_t>(size));
+                if (data && size) memcpy(shadow.data(), data, static_cast<size_t>(size));
+                // Null BufferData leaves an undefined store. Zero is one valid preimage.
+                else std::fill(shadow.begin(), shadow.end(), 0);
+            }
+        }
+        if (mapping != s_mapped_buffers.end()) {
+            // BufferData implicitly unmaps; data may still refer to this guest staging block.
+            host.GuestFree(mapping->second.address);
+            s_mapped_buffers.erase(mapping);
+        }
     });
     RegisterThunk("glBufferSubData", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
         const GLintptr offset = static_cast<int32_t>(jit.Regs()[1]);
@@ -428,25 +438,16 @@ void ThunkManager::RegisterGLThunks() {
         }
     });
 
-    RegisterThunk("glDeleteFramebuffers", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        glDeleteFramebuffers(jit.Regs()[0], reinterpret_cast<const GLuint*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[1])));
-    });
 
     RegisterThunk("glDeleteProgram", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
         glDeleteProgram(jit.Regs()[0]);
     });
 
-    RegisterThunk("glDeleteRenderbuffers", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        glDeleteRenderbuffers(jit.Regs()[0], reinterpret_cast<const GLuint*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[1])));
-    });
 
     RegisterThunk("glDeleteShader", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
         glDeleteShader(jit.Regs()[0]);
     });
 
-    RegisterThunk("glDeleteTextures", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        glDeleteTextures(jit.Regs()[0], reinterpret_cast<const GLuint*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[1])));
-    });
 
     RegisterThunk("glDepthFunc", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
         glDepthFunc(static_cast<GLenum>(jit.Regs()[0]));
@@ -501,87 +502,27 @@ void ThunkManager::RegisterGLThunks() {
         glFrontFace(static_cast<GLenum>(jit.Regs()[0]));
     });
 
-    RegisterThunk("glGenBuffers", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        glGenBuffers(jit.Regs()[0], reinterpret_cast<GLuint*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[1])));
-    });
 
-    RegisterThunk("glGenFramebuffers", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        glGenFramebuffers(jit.Regs()[0], reinterpret_cast<GLuint*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[1])));
-    });
 
-    RegisterThunk("glGenRenderbuffers", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        glGenRenderbuffers(jit.Regs()[0], reinterpret_cast<GLuint*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[1])));
-    });
 
-    RegisterThunk("glGenTextures", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        glGenTextures(jit.Regs()[0], reinterpret_cast<GLuint*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[1])));
-    });
 
     RegisterThunk("glGenerateMipmap", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
         glGenerateMipmap(static_cast<GLenum>(jit.Regs()[0]));
     });
 
-    RegisterThunk("glGetActiveAttrib", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        uint32_t sp = jit.Regs()[13];
-        GLsizei* length = reinterpret_cast<GLsizei*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[3]));
-        GLint* size = reinterpret_cast<GLint*>(GuestToHost(host.GetGuestMemoryBase(), host.MemoryRead32(sp)));
-        GLenum* type = reinterpret_cast<GLenum*>(GuestToHost(host.GetGuestMemoryBase(), host.MemoryRead32(sp + 4)));
-        GLchar* name = reinterpret_cast<GLchar*>(GuestToHost(host.GetGuestMemoryBase(), host.MemoryRead32(sp + 8)));
-        glGetActiveAttrib(jit.Regs()[0], jit.Regs()[1], jit.Regs()[2], length, size, type, name);
-    });
 
-    RegisterThunk("glGetActiveUniform", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        uint32_t sp = jit.Regs()[13];
-        GLsizei* length = reinterpret_cast<GLsizei*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[3]));
-        GLint* size = reinterpret_cast<GLint*>(GuestToHost(host.GetGuestMemoryBase(), host.MemoryRead32(sp)));
-        GLenum* type = reinterpret_cast<GLenum*>(GuestToHost(host.GetGuestMemoryBase(), host.MemoryRead32(sp + 4)));
-        GLchar* name = reinterpret_cast<GLchar*>(GuestToHost(host.GetGuestMemoryBase(), host.MemoryRead32(sp + 8)));
-        glGetActiveUniform(jit.Regs()[0], jit.Regs()[1], jit.Regs()[2], length, size, type, name);
-    });
 
-    RegisterThunk("glGetAttribLocation", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        jit.Regs()[0] = glGetAttribLocation(jit.Regs()[0], reinterpret_cast<const GLchar*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[1])));
-    });
 
     RegisterThunk("glGetError", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
         const GLenum error = glGetError();
         jit.Regs()[0] = error;
     });
 
-    RegisterThunk("glGetIntegerv", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        const GLenum pname = static_cast<GLenum>(jit.Regs()[0]);
-        const uint32_t output = jit.Regs()[1];
-        glGetIntegerv(pname, reinterpret_cast<GLint*>(GuestToHost(host.GetGuestMemoryBase(), output)));
-    });
 
-    RegisterThunk("glGetProgramInfoLog", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        GLsizei* length = jit.Regs()[2] ?
-            reinterpret_cast<GLsizei*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[2])) : nullptr;
-        glGetProgramInfoLog(jit.Regs()[0], jit.Regs()[1], length,
-                           reinterpret_cast<GLchar*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[3])));
-    });
 
-    RegisterThunk("glGetProgramiv", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        glGetProgramiv(jit.Regs()[0], static_cast<GLenum>(jit.Regs()[1]),
-                       reinterpret_cast<GLint*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[2])));
-    });
 
-    RegisterThunk("glGetRenderbufferParameteriv", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        glGetRenderbufferParameteriv(jit.Regs()[0], jit.Regs()[1],
-                                     reinterpret_cast<GLint*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[2])));
-    });
 
-    RegisterThunk("glGetShaderInfoLog", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        GLsizei* length = jit.Regs()[2] ?
-            reinterpret_cast<GLsizei*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[2])) : nullptr;
-        glGetShaderInfoLog(jit.Regs()[0], jit.Regs()[1], length,
-                          reinterpret_cast<GLchar*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[3])));
-    });
 
-    RegisterThunk("glGetShaderiv", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        glGetShaderiv(jit.Regs()[0], static_cast<GLenum>(jit.Regs()[1]),
-                      reinterpret_cast<GLint*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[2])));
-    });
 
     // GL promises a pointer valid for the life of the context, and callers keep
     // it. One block per enum, so a capability check inside a frame loop costs
@@ -599,9 +540,6 @@ void ThunkManager::RegisterGLThunks() {
         jit.Regs()[0] = value ? string_cache->Copy(host, value) : 0;
     });
 
-    RegisterThunk("glGetUniformLocation", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        jit.Regs()[0] = glGetUniformLocation(jit.Regs()[0], reinterpret_cast<const GLchar*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[1])));
-    });
 
     RegisterThunk("glHint", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
         glHint(static_cast<GLenum>(jit.Regs()[0]), static_cast<GLenum>(jit.Regs()[1]));
@@ -668,6 +606,21 @@ void ThunkManager::RegisterGLThunks() {
             if (length < 0 && !memchr(text, 0, std::min<size_t>(host.GetGuestMemorySize() - address, 1024 * 1024))) return;
             strings[i] = text;
         }
+        if (count == 3) {
+            std::array<std::string_view, 3> parts;
+            for (size_t i = 0; i < parts.size(); ++i) {
+                const size_t length = lengths && lengths[i] >= 0 ?
+                    static_cast<size_t>(lengths[i]) : std::strlen(strings[i]);
+                parts[i] = {strings[i], length};
+            }
+            const std::string prepared = PrepareWolfShaderSource(parts[0], parts[1], parts[2]);
+            if (!prepared.empty() && prepared.size() <= static_cast<size_t>(std::numeric_limits<GLint>::max())) {
+                const GLchar* source = prepared.data();
+                const GLint length = static_cast<GLint>(prepared.size());
+                glShaderSource(jit.Regs()[0], 1, &source, &length);
+                return;
+            }
+        }
         glShaderSource(jit.Regs()[0], count, strings.data(), lengths);
     });
 
@@ -707,10 +660,6 @@ void ThunkManager::RegisterGLThunks() {
                     ReadSF(jit, 2), ReadSF(jit, 3));
     });
 
-    RegisterThunk("glUniform3fv", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        glUniform3fv(jit.Regs()[0], jit.Regs()[1],
-                     reinterpret_cast<const GLfloat*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[2])));
-    });
 
     RegisterThunk("glUniform4f", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
         uint32_t sp = jit.Regs()[13];
@@ -720,20 +669,8 @@ void ThunkManager::RegisterGLThunks() {
                     ReadSF(jit, 2), ReadSF(jit, 3), w);
     });
 
-    RegisterThunk("glUniform4fv", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        glUniform4fv(jit.Regs()[0], jit.Regs()[1],
-                     reinterpret_cast<const GLfloat*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[2])));
-    });
 
-    RegisterThunk("glUniformMatrix3fv", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        glUniformMatrix3fv(jit.Regs()[0], jit.Regs()[1], jit.Regs()[2],
-                           reinterpret_cast<const GLfloat*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[3])));
-    });
 
-    RegisterThunk("glUniformMatrix4fv", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
-        glUniformMatrix4fv(jit.Regs()[0], jit.Regs()[1], jit.Regs()[2],
-                           reinterpret_cast<const GLfloat*>(GuestToHost(host.GetGuestMemoryBase(), jit.Regs()[3])));
-    });
 
     RegisterThunk("glUseProgram", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
         glUseProgram(jit.Regs()[0]);

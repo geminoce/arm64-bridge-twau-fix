@@ -6,10 +6,12 @@
 #include <GLES2/gl2.h>
 #include <GLES2/gl2ext.h>
 #include <GLES3/gl3.h>
+#include <GLES3/gl31.h>
 #include <GLES/gl.h>
 #include <GLES/glext.h>
 #include <android/log.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <limits>
 
@@ -21,6 +23,13 @@
 #endif
 
 namespace {
+
+const char* GuestGlName(DynarmicHost& host, uint32_t address, const char* function_name) {
+    const char* name = static_cast<const char*>(GuestSpan(host.GetGuestMemoryBase(), host.GetGuestMemorySize(), address, 1));
+    if (name && memchr(name, 0, std::min<size_t>(host.GetGuestMemorySize() - address, 1024 * 1024))) return name;
+    LOGE("%s rejected unterminated guest name at 0x%08X", function_name, address);
+    return nullptr;
+}
 
 bool CheckedArrayBytes(size_t count, size_t components, size_t element_size,
                        size_t* bytes) {
@@ -95,7 +104,13 @@ const T* CountedGuestValues(DynarmicHost& host, uint32_t address,
                             const char* function_name, bool* valid) {
     if (count <= 0) {
         *valid = true;
-        return nullptr;
+        if (count < 0) return nullptr;
+        const T* values = address
+            ? static_cast<const T*>(GuestSpan(host.GetGuestMemoryBase(), host.GetGuestMemorySize(), address, 0))
+            : nullptr;
+        // shortcut: this avoids Mali's NULL fault only, extend if guest code repeats count-0 matrices.
+        static const T empty_values[16]{};
+        return values ? values : empty_values;
     }
     const T* input = GuestInputArray<T>(
         host, address, static_cast<size_t>(count), components, function_name);
@@ -139,6 +154,11 @@ size_t GetGlStateValueCount(GLenum pname) {
         case GL_SHADER_BINARY_FORMATS: {
             GLint count = 0;
             glGetIntegerv(GL_NUM_SHADER_BINARY_FORMATS, &count);
+            return count > 0 ? static_cast<size_t>(count) : 1;
+        }
+        case GL_PROGRAM_BINARY_FORMATS: {
+            GLint count = 0;
+            glGetIntegerv(GL_NUM_PROGRAM_BINARY_FORMATS, &count);
             return count > 0 ? static_cast<size_t>(count) : 1;
         }
         default:
@@ -279,6 +299,195 @@ bool ResolveBridgeGlCompressed(DynarmicHost& host, uint32_t address,
 }
 
 void RegisterGles2CoreThunks(ThunkManager& manager) {
+    manager.RegisterThunk("glBindAttribLocation", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLuint program = args.U32(), index = args.U32();
+        const char* name = GuestGlName(host, args.Ptr(), "glBindAttribLocation");
+        if (name) glBindAttribLocation(program, index, name);
+    });
+    manager.RegisterThunk("glGetAttribLocation", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLuint program = args.U32();
+        const char* name = GuestGlName(host, args.Ptr(), "glGetAttribLocation");
+        jit.Regs()[0] = name ? glGetAttribLocation(program, name) : static_cast<uint32_t>(-1);
+    });
+    manager.RegisterThunk("glGetUniformLocation", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLuint program = args.U32();
+        const char* name = GuestGlName(host, args.Ptr(), "glGetUniformLocation");
+        jit.Regs()[0] = name ? glGetUniformLocation(program, name) : static_cast<uint32_t>(-1);
+    });
+    manager.RegisterThunk("glGenBuffers", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLsizei count = args.I32();
+        const uint32_t address = args.Ptr();
+        GLuint* names = count > 0 ? GuestOutputArray<GLuint>(host, address, count, 1, "glGenBuffers") : nullptr;
+        if (count > 0 && !names) return;
+        glGenBuffers(count, names);
+    });
+    manager.RegisterThunk("glGenFramebuffers", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLsizei count = args.I32();
+        const uint32_t address = args.Ptr();
+        GLuint* names = count > 0 ? GuestOutputArray<GLuint>(host, address, count, 1, "glGenFramebuffers") : nullptr;
+        if (count > 0 && !names) return;
+        glGenFramebuffers(count, names);
+    });
+    manager.RegisterThunk("glGenRenderbuffers", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLsizei count = args.I32();
+        const uint32_t address = args.Ptr();
+        GLuint* names = count > 0 ? GuestOutputArray<GLuint>(host, address, count, 1, "glGenRenderbuffers") : nullptr;
+        if (count > 0 && !names) return;
+        glGenRenderbuffers(count, names);
+    });
+    manager.RegisterThunk("glGenTextures", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLsizei count = args.I32();
+        const uint32_t address = args.Ptr();
+        GLuint* names = count > 0 ? GuestOutputArray<GLuint>(host, address, count, 1, "glGenTextures") : nullptr;
+        if (count > 0 && !names) return;
+        glGenTextures(count, names);
+    });
+    manager.RegisterThunk("glDeleteFramebuffers", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLsizei count = args.I32();
+        const uint32_t address = args.Ptr();
+        const GLuint* names = count > 0 ? GuestInputArray<GLuint>(host, address, count, 1, "glDeleteFramebuffers") : nullptr;
+        if (count > 0 && !names) return;
+        glDeleteFramebuffers(count, names);
+    });
+    manager.RegisterThunk("glDeleteRenderbuffers", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLsizei count = args.I32();
+        const uint32_t address = args.Ptr();
+        const GLuint* names = count > 0 ? GuestInputArray<GLuint>(host, address, count, 1, "glDeleteRenderbuffers") : nullptr;
+        if (count > 0 && !names) return;
+        glDeleteRenderbuffers(count, names);
+    });
+    manager.RegisterThunk("glDeleteTextures", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLsizei count = args.I32();
+        const uint32_t address = args.Ptr();
+        const GLuint* names = count > 0 ? GuestInputArray<GLuint>(host, address, count, 1, "glDeleteTextures") : nullptr;
+        if (count > 0 && !names) return;
+        glDeleteTextures(count, names);
+    });
+    manager.RegisterThunk("glGetActiveAttrib", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLuint program = args.U32(), index = args.U32();
+        const GLsizei capacity = args.I32();
+        const uint32_t length_address = args.Ptr(), size_address = args.Ptr();
+        const uint32_t type_address = args.Ptr(), name_address = args.Ptr();
+        if (capacity < 0) { glGetActiveAttrib(program, index, capacity, nullptr, nullptr, nullptr, nullptr); return; }
+        bool length_valid = false;
+        GLsizei* length = OptionalGuestOutput<GLsizei>(host, length_address, 1, "glGetActiveAttrib", &length_valid);
+        GLint* size = GuestOutputArray<GLint>(host, size_address, 1, 1, "glGetActiveAttrib");
+        GLenum* type = GuestOutputArray<GLenum>(host, type_address, 1, 1, "glGetActiveAttrib");
+        GLchar* name = capacity > 0 ? GuestOutputArray<GLchar>(host, name_address, capacity, 1, "glGetActiveAttrib") : nullptr;
+        if (!length_valid || !size || !type || (capacity > 0 && !name)) return;
+        glGetActiveAttrib(program, index, capacity, length, size, type, name);
+    });
+    manager.RegisterThunk("glGetActiveUniform", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLuint program = args.U32(), index = args.U32();
+        const GLsizei capacity = args.I32();
+        const uint32_t length_address = args.Ptr(), size_address = args.Ptr();
+        const uint32_t type_address = args.Ptr(), name_address = args.Ptr();
+        if (capacity < 0) { glGetActiveUniform(program, index, capacity, nullptr, nullptr, nullptr, nullptr); return; }
+        bool length_valid = false;
+        GLsizei* length = OptionalGuestOutput<GLsizei>(host, length_address, 1, "glGetActiveUniform", &length_valid);
+        GLint* size = GuestOutputArray<GLint>(host, size_address, 1, 1, "glGetActiveUniform");
+        GLenum* type = GuestOutputArray<GLenum>(host, type_address, 1, 1, "glGetActiveUniform");
+        GLchar* name = capacity > 0 ? GuestOutputArray<GLchar>(host, name_address, capacity, 1, "glGetActiveUniform") : nullptr;
+        if (!length_valid || !size || !type || (capacity > 0 && !name)) return;
+        glGetActiveUniform(program, index, capacity, length, size, type, name);
+    });
+    manager.RegisterThunk("glGetIntegerv", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLenum pname = args.U32();
+        GLint* data = GuestOutputArray<GLint>(host, args.Ptr(), GetGlStateValueCount(pname), 1, "glGetIntegerv");
+        if (data) glGetIntegerv(pname, data);
+    });
+    manager.RegisterThunk("glGetProgramInfoLog", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLuint object = args.U32();
+        const GLsizei capacity = args.I32();
+        const uint32_t length_address = args.Ptr(), log_address = args.Ptr();
+        if (capacity < 0) { glGetProgramInfoLog(object, capacity, nullptr, nullptr); return; }
+        bool length_valid = false;
+        GLsizei* length = OptionalGuestOutput<GLsizei>(host, length_address, 1, "glGetProgramInfoLog", &length_valid);
+        GLchar* log = capacity > 0 ? GuestOutputArray<GLchar>(host, log_address, capacity, 1, "glGetProgramInfoLog") : nullptr;
+        if (!length_valid || (capacity > 0 && !log)) return;
+        glGetProgramInfoLog(object, capacity, length, log);
+    });
+    manager.RegisterThunk("glGetShaderInfoLog", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLuint object = args.U32();
+        const GLsizei capacity = args.I32();
+        const uint32_t length_address = args.Ptr(), log_address = args.Ptr();
+        if (capacity < 0) { glGetShaderInfoLog(object, capacity, nullptr, nullptr); return; }
+        bool length_valid = false;
+        GLsizei* length = OptionalGuestOutput<GLsizei>(host, length_address, 1, "glGetShaderInfoLog", &length_valid);
+        GLchar* log = capacity > 0 ? GuestOutputArray<GLchar>(host, log_address, capacity, 1, "glGetShaderInfoLog") : nullptr;
+        if (!length_valid || (capacity > 0 && !log)) return;
+        glGetShaderInfoLog(object, capacity, length, log);
+    });
+    manager.RegisterThunk("glGetProgramiv", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLuint object = args.U32();
+        const GLenum pname = args.U32();
+        GLint* data = GuestOutputArray<GLint>(host, args.Ptr(), pname == GL_COMPUTE_WORK_GROUP_SIZE ? 3 : 1, 1, "glGetProgramiv");
+        if (data) glGetProgramiv(object, pname, data);
+    });
+    manager.RegisterThunk("glGetShaderiv", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLuint object = args.U32();
+        const GLenum pname = args.U32();
+        GLint* data = GuestOutputArray<GLint>(host, args.Ptr(), 1, 1, "glGetShaderiv");
+        if (data) glGetShaderiv(object, pname, data);
+    });
+    manager.RegisterThunk("glGetRenderbufferParameteriv", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLuint object = args.U32();
+        const GLenum pname = args.U32();
+        GLint* data = GuestOutputArray<GLint>(host, args.Ptr(), 1, 1, "glGetRenderbufferParameteriv");
+        if (data) glGetRenderbufferParameteriv(object, pname, data);
+    });
+    manager.RegisterThunk("glUniform3fv", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLint location = args.I32();
+        const GLsizei count = args.I32();
+        bool valid = false;
+        const GLfloat* values = CountedGuestValues<GLfloat>(host, args.Ptr(), count, 3, "glUniform3fv", &valid);
+        if (valid) glUniform3fv(location, count, values);
+    });
+    manager.RegisterThunk("glUniform4fv", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLint location = args.I32();
+        const GLsizei count = args.I32();
+        bool valid = false;
+        const GLfloat* values = CountedGuestValues<GLfloat>(host, args.Ptr(), count, 4, "glUniform4fv", &valid);
+        if (valid) glUniform4fv(location, count, values);
+    });
+    manager.RegisterThunk("glUniformMatrix3fv", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLint location = args.I32();
+        const GLsizei count = args.I32();
+        const GLboolean transpose = static_cast<GLboolean>(args.U32());
+        bool valid = false;
+        const GLfloat* values = CountedGuestValues<GLfloat>(host, args.Ptr(), count, 9, "glUniformMatrix3fv", &valid);
+        if (valid) glUniformMatrix3fv(location, count, transpose, values);
+    });
+    manager.RegisterThunk("glUniformMatrix4fv", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
+        Arm32CallArgs args(jit, host.GetGuestMemoryBase());
+        const GLint location = args.I32();
+        const GLsizei count = args.I32();
+        const GLboolean transpose = static_cast<GLboolean>(args.U32());
+        bool valid = false;
+        const GLfloat* values = CountedGuestValues<GLfloat>(host, args.Ptr(), count, 16, "glUniformMatrix4fv", &valid);
+        if (valid) glUniformMatrix4fv(location, count, transpose, values);
+    });
     manager.RegisterThunk("glBlendColor", [](Dynarmic::A32::Jit& jit, DynarmicHost& host) {
         Arm32CallArgs args(jit, host.GetGuestMemoryBase());
         const GLfloat red = args.F32();
