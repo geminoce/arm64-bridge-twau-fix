@@ -29,6 +29,9 @@
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
+#if WOLF_RENDERDOC_GLES_LAYER
+#include "wolf_renderdoc_gles_dispatch.h"
+#endif
 
 // Buffer maps must keep native pointers out of the ARM32 address space.
 // ES3 uses a read/write host map; ES2 WRITE_ONLY mappings preserve bytes through

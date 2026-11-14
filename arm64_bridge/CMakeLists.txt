@@ -25,6 +25,7 @@ add_custom_target(guest_qsort_image DEPENDS "${GUEST_QSORT_HEADER}")
 set(WOLF_CORE_SOURCES
     src/elf_loader.cpp src/dynarmic_host.cpp src/thunk_manager.cpp
     src/thunks_gl.cpp src/thunks_gl_gles2_core.cpp src/thunks_android.cpp
+    src/wolf_renderdoc_gles.cpp
     src/thunks_libc.cpp src/thunks_opensles.cpp src/jni_fake_env.cpp)
 add_library(wolf_core OBJECT ${WOLF_CORE_SOURCES})
 add_dependencies(wolf_core guest_qsort_image)
@@ -41,6 +42,22 @@ target_link_libraries(wolf_core PUBLIC dynarmic GLESv3 GLESv2 GLESv1_CM EGL Open
 target_link_options(wolf_core INTERFACE -Wl,-z,max-page-size=16384 -Wl,-z,common-page-size=16384 -Wl,-z,relro -Wl,-z,now)
 add_library(main SHARED src/jni_bridge.cpp)
 target_link_libraries(main PRIVATE wolf_core)
+
+option(WOLF_RENDERDOC_GLES_LAYER "Route bridge EGL/GLES calls through bundled RenderDoc GLES layer" OFF)
+set(WOLF_RENDERDOC_GLES_LAYER_LIBRARY "${CMAKE_CURRENT_SOURCE_DIR}/third_party/renderdoc/libVkLayer_GLES_RenderDoc.so"
+    CACHE FILEPATH "ARM64 libVkLayer_GLES_RenderDoc.so to link and package")
+if(WOLF_RENDERDOC_GLES_LAYER)
+    if(NOT ANDROID_ABI STREQUAL "arm64-v8a")
+        message(FATAL_ERROR "WOLF_RENDERDOC_GLES_LAYER requires ANDROID_ABI=arm64-v8a")
+    endif()
+    if(NOT EXISTS "${WOLF_RENDERDOC_GLES_LAYER_LIBRARY}")
+        message(FATAL_ERROR "Set WOLF_RENDERDOC_GLES_LAYER_LIBRARY to ARM64 libVkLayer_GLES_RenderDoc.so")
+    endif()
+    target_include_directories(wolf_core PRIVATE third_party/renderdoc)
+    target_compile_definitions(wolf_core PUBLIC WOLF_RENDERDOC_GLES_LAYER=1)
+    target_compile_definitions(main PRIVATE WOLF_RENDERDOC_GLES_LAYER=1)
+    target_link_libraries(main PRIVATE "${WOLF_RENDERDOC_GLES_LAYER_LIBRARY}")
+endif()
 add_executable(wolf_fastmem_fpsr_contract_test EXCLUDE_FROM_ALL tests/fastmem_fpsr_contract_test.cpp)
 target_link_libraries(wolf_fastmem_fpsr_contract_test PRIVATE dynarmic merry::mcl)
 target_compile_options(wolf_fastmem_fpsr_contract_test PRIVATE -Wall -Wextra -Werror)

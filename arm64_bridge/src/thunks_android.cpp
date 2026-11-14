@@ -26,6 +26,10 @@
 #include <unordered_map>
 #include <vector>
 
+#if WOLF_RENDERDOC_GLES_LAYER
+#include "wolf_renderdoc_gles_dispatch.h"
+#endif
+
 #define LOG_TAG "Arm32Bridge_Android"
 #if ARM32_BRIDGE_ENABLE_LOGGING
 #define LOGI(...) __android_log_print(ANDROID_LOG_INFO, LOG_TAG, __VA_ARGS__)

@@ -6,6 +6,8 @@ param(
     [string]$BuildDirectory,
     [switch]$JniContractChecks,
     [switch]$FmodDiagnostic,
+    [switch]$RenderDocGlesLayer,
+    [string]$RenderDocLayerPath,
     [int]$Parallel = 6
 )
 $ErrorActionPreference = 'Stop'
@@ -21,10 +23,15 @@ $Ninja = Join-Path $CmakeRoot 'bin/ninja.exe'
 $Toolchain = Join-Path $Ndk 'build/cmake/android.toolchain.cmake'
 $ContractOption = if ($JniContractChecks) { 'ON' } else { 'OFF' }
 $FmodOption = if ($FmodDiagnostic) { 'ON' } else { 'OFF' }
+$RenderDocOption = if ($RenderDocGlesLayer) { 'ON' } else { 'OFF' }
+if (-not $RenderDocLayerPath) { $RenderDocLayerPath = Join-Path $BridgeRoot 'third_party/renderdoc/libVkLayer_GLES_RenderDoc.so' }
 foreach ($Required in @($Cmake, $Ninja, $Toolchain, $Python)) {
     if (-not (Test-Path -LiteralPath $Required -PathType Leaf)) { throw "Missing build tool: $Required" }
 }
-& $Cmake -S $BridgeRoot -B $BuildDirectory -G Ninja "-DCMAKE_MAKE_PROGRAM=$Ninja" "-DCMAKE_TOOLCHAIN_FILE=$Toolchain" '-DANDROID_ABI=arm64-v8a' '-DANDROID_PLATFORM=android-26' '-DANDROID_STL=c++_static' '-DCMAKE_BUILD_TYPE=Release' "-DPython3_EXECUTABLE=$Python" "-DWOLF_JNI_CONTRACT_CHECKS=$ContractOption" "-DWOLF_FMOD_DIAGNOSTIC=$FmodOption" '-DFETCHCONTENT_FULLY_DISCONNECTED=ON' '-DFETCHCONTENT_UPDATES_DISCONNECTED=ON'
+if ($RenderDocGlesLayer -and -not (Test-Path -LiteralPath $RenderDocLayerPath -PathType Leaf)) {
+    throw "Missing ARM64 RenderDoc GLES layer: $RenderDocLayerPath"
+}
+& $Cmake -S $BridgeRoot -B $BuildDirectory -G Ninja "-DCMAKE_MAKE_PROGRAM=$Ninja" "-DCMAKE_TOOLCHAIN_FILE=$Toolchain" '-DANDROID_ABI=arm64-v8a' '-DANDROID_PLATFORM=android-26' '-DANDROID_STL=c++_static' '-DCMAKE_BUILD_TYPE=Release' "-DPython3_EXECUTABLE=$Python" "-DWOLF_JNI_CONTRACT_CHECKS=$ContractOption" "-DWOLF_FMOD_DIAGNOSTIC=$FmodOption" "-DWOLF_RENDERDOC_GLES_LAYER=$RenderDocOption" "-DWOLF_RENDERDOC_GLES_LAYER_LIBRARY=$RenderDocLayerPath" '-DFETCHCONTENT_FULLY_DISCONNECTED=ON' '-DFETCHCONTENT_UPDATES_DISCONNECTED=ON'
 if ($LASTEXITCODE -ne 0) { throw "CMake configure failed: $LASTEXITCODE" }
 & $Cmake --build $BuildDirectory --target main --parallel $Parallel
 if ($LASTEXITCODE -ne 0) { throw "ARM64 build failed: $LASTEXITCODE" }
