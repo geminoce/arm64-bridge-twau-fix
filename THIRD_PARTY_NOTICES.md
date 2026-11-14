@@ -9,6 +9,7 @@ The GPL-3.0-or-later license at the repository root applies to the bridge and co
 | fmt | MIT with the upstream compiled-code exception | [LICENSE](arm64_bridge/third_party/dynarmic/externals/fmt/LICENSE) |
 | mcl | MIT | [LICENSE](arm64_bridge/third_party/dynarmic/externals/mcl/LICENSE) |
 | oaknut | MIT | [LICENSE](arm64_bridge/third_party/dynarmic/externals/oaknut/LICENSE) |
+| RenderDoc Android GLES layer (prebuilt) | MIT | [LICENSE.md](arm64_bridge/third_party/renderdoc/LICENSE.md) |
 | robin-map | MIT | [LICENSE](arm64_bridge/third_party/dynarmic/externals/robin-map/LICENSE) |
 
 Individual source notices remain authoritative for any additional upstream code. The bundled Dynarmic source includes local modifications; the corresponding patches are recorded in `arm64_bridge/patches/dynarmic/` and are already applied.

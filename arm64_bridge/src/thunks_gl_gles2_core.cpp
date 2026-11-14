@@ -10,6 +10,9 @@
 #include <GLES/gl.h>
 #include <GLES/glext.h>
 #include <android/log.h>
+#if WOLF_RENDERDOC_GLES_LAYER
+#include "wolf_renderdoc_gles_dispatch.h"
+#endif
 
 #include <algorithm>
 #include <cstdint>

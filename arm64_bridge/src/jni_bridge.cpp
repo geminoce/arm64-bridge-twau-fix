@@ -24,6 +24,9 @@
 #include "thunks_android.h"
 #include "thunks_opensles.h"
 #include "wolf_display_overrides.h"
+#if WOLF_RENDERDOC_GLES_LAYER
+#include "wolf_renderdoc_gles.h"
+#endif
 #ifdef WOLF_JNI_CONTRACT_CHECKS
 #include "../tests/fakejni_art_checks.h"
 #endif
@@ -450,6 +453,9 @@ Java_com_telltalegames_fables100_DisplayCadence_nativeSetFrameLimit(
 }
 
 extern "C" JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void*) {
+#if WOLF_RENDERDOC_GLES_LAYER
+    wolf_renderdoc_gles::Initialize();
+#endif
     g_jvm = vm;
     JNIEnv* env = nullptr;
     if (vm->GetEnv(reinterpret_cast<void**>(&env), JNI_VERSION_1_6) != JNI_OK) return JNI_ERR;
